@@ -116,9 +116,10 @@ body {
   min-height: 0;
   width: 100%;
   max-width: 420px;
+  overflow-y: auto;
   display: grid;
   grid-template-columns: repeat(2, 1fr);
-  grid-auto-rows: 1fr;
+  grid-auto-rows: minmax(64px, 1fr);
   gap: 10px;
 }
 
@@ -192,6 +193,37 @@ body {
   text-align: center;
   -webkit-user-select: text;
   user-select: text;
+}
+
+/* Chord picker (root and quality) */
+.picker {
+  display: grid;
+  gap: 4px;
+  width: 100%;
+}
+
+.picker.roots {
+  grid-template-columns: repeat(6, 1fr);
+}
+
+.picker.qualities {
+  grid-template-columns: repeat(5, 1fr);
+}
+
+.picker button {
+  font: inherit;
+  font-size: 0.8rem;
+  padding: 6px 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--tool);
+  color: var(--fg);
+}
+
+.picker button.is-on {
+  background: var(--pad-selected);
+  border-color: var(--pad-selected);
+  color: #fff;
 }
 
 .pad-notes {

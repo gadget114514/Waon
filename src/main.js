@@ -1,25 +1,48 @@
 import './style.css';
 
-// MIDI note numbers (60 = middle C)
 const PAD_COUNT = 8;
 const MAX_NOTES = 4;
 const PIANO_LOW = 60; // C4
 const PIANO_HIGH = 72; // C5
+const CHORD_BASE = 60; // root notes are placed in the octave starting at C4
 const PADS_KEY = 'waon.pads';
 const TAKES_KEY = 'waon.takes';
 
-const DEFAULT_PADS = [
-  { name: 'C', notes: [60, 64, 67] },
-  { name: 'Dm', notes: [62, 65, 69] },
-  { name: 'Em', notes: [64, 67, 71] },
-  { name: 'F', notes: [65, 69, 72] },
-  { name: 'G', notes: [67, 71, 74] },
-  { name: 'Am', notes: [69, 72, 76] },
-  { name: 'G7', notes: [67, 71, 74, 77] },
-  { name: 'Cmaj7', notes: [60, 64, 67, 71] },
-];
+const ROOT_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
 
-const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+// label: shown on the picker button; suffix: appended to the root in the pad name
+const QUALITIES = [
+  { id: 'M', label: 'M', suffix: '', intervals: [0, 4, 7] },
+  { id: 'm', label: 'm', suffix: 'm', intervals: [0, 3, 7] },
+  { id: '7', label: '7', suffix: '7', intervals: [0, 4, 7, 10] },
+  { id: 'maj7', label: 'M7', suffix: 'maj7', intervals: [0, 4, 7, 11] },
+  { id: 'm7', label: 'm7', suffix: 'm7', intervals: [0, 3, 7, 10] },
+  { id: '6', label: '6', suffix: '6', intervals: [0, 4, 7, 9] },
+  { id: 'sus4', label: 'sus4', suffix: 'sus4', intervals: [0, 5, 7] },
+  { id: 'sus2', label: 'sus2', suffix: 'sus2', intervals: [0, 2, 7] },
+  { id: 'dim', label: 'dim', suffix: 'dim', intervals: [0, 3, 6] },
+  { id: 'aug', label: 'aug', suffix: 'aug', intervals: [0, 4, 8] },
+];
+const QUALITY_BY_ID = Object.fromEntries(QUALITIES.map((q) => [q.id, q]));
+
+// Pads keep their chord (root + quality) so the picker can change them.
+// root/quality are null for custom pads whose notes were set on the piano.
+const DEFAULT_PADS = [
+  { name: 'C', root: 0, quality: 'M' },
+  { name: 'Dm', root: 2, quality: 'm' },
+  { name: 'Em', root: 4, quality: 'm' },
+  { name: 'F', root: 5, quality: 'M' },
+  { name: 'G', root: 7, quality: 'M' },
+  { name: 'Am', root: 9, quality: 'm' },
+  { name: 'G7', root: 7, quality: '7' },
+  { name: 'Cmaj7', root: 0, quality: 'maj7' },
+].map((p) => ({ ...p, notes: chordNotes(p.root, p.quality) }));
+
+function chordNotes(root, quality) {
+  return QUALITY_BY_ID[quality].intervals.map((i) => CHORD_BASE + root + i);
+}
+
+const NOTE_NAMES = ROOT_NAMES;
 function midiName(midi) {
   return NOTE_NAMES[midi % 12] + (Math.floor(midi / 12) - 1);
 }
@@ -115,15 +138,25 @@ function sanitizeNotes(list) {
   return notes.sort((a, b) => a - b).slice(0, MAX_NOTES);
 }
 
-function clonePads(list) {
-  return list.map((p) => ({ name: p.name, notes: [...p.notes] }));
+function sanitizeRoot(value) {
+  return Number.isInteger(value) && value >= 0 && value <= 11 ? value : null;
+}
+
+function sanitizeQuality(value) {
+  return typeof value === 'string' && QUALITY_BY_ID[value] ? value : null;
+}
+
+function clonePad(pad) {
+  return { name: pad.name, root: pad.root, quality: pad.quality, notes: [...pad.notes] };
 }
 
 function loadPads() {
   const saved = loadJson(PADS_KEY, null);
-  if (!Array.isArray(saved) || saved.length !== PAD_COUNT) return clonePads(DEFAULT_PADS);
+  if (!Array.isArray(saved) || saved.length !== PAD_COUNT) return DEFAULT_PADS.map(clonePad);
   return saved.map((p, i) => ({
     name: typeof p?.name === 'string' ? p.name.slice(0, 10) : DEFAULT_PADS[i].name,
+    root: sanitizeRoot(p?.root),
+    quality: sanitizeQuality(p?.quality),
     notes: sanitizeNotes(p?.notes),
   }));
 }
@@ -166,6 +199,8 @@ const els = {
   pads: $('pads'),
   editor: $('editor'),
   padName: $('pad-name'),
+  roots: $('roots'),
+  qualities: $('qualities'),
   padNotes: $('pad-notes'),
   piano: $('piano'),
 };
@@ -249,11 +284,58 @@ function selectPad(index) {
 
 // ---------- Editor ----------
 
+function applyChord(root, quality) {
+  const pad = pads[selectedPad];
+  pad.root = root;
+  pad.quality = quality;
+  pad.notes = chordNotes(root, quality);
+  pad.name = ROOT_NAMES[root] + QUALITY_BY_ID[quality].suffix;
+  savePads();
+  renderPads();
+  renderEditor();
+  updateKeyMarks();
+}
+
+function setRoot(root) {
+  applyChord(root, pads[selectedPad].quality ?? 'M');
+}
+
+function setQuality(quality) {
+  applyChord(pads[selectedPad].root ?? 0, quality);
+}
+
+function buildChordPicker() {
+  ROOT_NAMES.forEach((name, root) => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = name;
+    button.dataset.root = String(root);
+    button.addEventListener('click', () => setRoot(root));
+    els.roots.append(button);
+  });
+  QUALITIES.forEach((quality) => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = quality.label;
+    button.dataset.quality = quality.id;
+    button.addEventListener('click', () => setQuality(quality.id));
+    els.qualities.append(button);
+  });
+}
+
 function renderEditor() {
   els.editor.hidden = !editMode;
   if (!editMode) return;
   const pad = pads[selectedPad];
   if (document.activeElement !== els.padName) els.padName.value = pad.name;
+
+  els.roots.querySelectorAll('button').forEach((button) => {
+    button.classList.toggle('is-on', Number(button.dataset.root) === pad.root);
+  });
+  els.qualities.querySelectorAll('button').forEach((button) => {
+    button.classList.toggle('is-on', button.dataset.quality === pad.quality);
+  });
+
   els.padNotes.replaceChildren(
     ...pad.notes.map((midi) => {
       const chip = document.createElement('span');
@@ -269,6 +351,7 @@ function renderEditor() {
   }
 }
 
+// Piano edits make the pad a custom chord: it no longer follows root/quality.
 function toggleNote(midi) {
   const pad = pads[selectedPad];
   const index = pad.notes.indexOf(midi);
@@ -281,6 +364,8 @@ function toggleNote(midi) {
     pad.notes.push(midi);
     pad.notes.sort((a, b) => a - b);
   }
+  pad.root = null;
+  pad.quality = null;
   savePads();
   renderPads();
   renderEditor();
@@ -295,7 +380,7 @@ function flashHint(message) {
 
 function updateHint() {
   els.hint.textContent = editMode
-    ? 'ボタンを選び、名前と鍵盤で音を編集します'
+    ? 'ボタンを選び、コードや鍵盤で音を編集します'
     : 'ボタンを押している間、和音が鳴ります';
 }
 
@@ -530,6 +615,7 @@ els.piano.addEventListener('contextmenu', (event) => event.preventDefault());
 
 // ---------- Init ----------
 
+buildChordPicker();
 renderPads();
 buildPiano();
 renderEditor();
