@@ -5,6 +5,8 @@ const MAX_NOTES = 4;
 const PIANO_LOW = 60; // C4
 const PIANO_HIGH = 72; // C5
 const CHORD_BASE = 60; // root notes are placed in the octave starting at C4
+const MIN_BLOCK_MS = 50;
+const NUDGE_MS = 100;
 const PADS_KEY = 'waon.pads';
 const TAKES_KEY = 'waon.takes';
 
@@ -182,8 +184,10 @@ let takes = loadTakes(); // saved recordings
 let currentTake = null; // selected take (saved or unsaved)
 let recording = null; // { start, events } while recording
 let playback = null; // { timers, keys } while playing
-let editMode = false;
+let editMode = false; // editing pads
+let takeEditMode = false; // editing the notes of the current take
 let selectedPad = 0;
+let selectedBlock = 0;
 let hintTimer = null;
 
 const $ = (id) => document.getElementById(id);
@@ -192,6 +196,7 @@ const els = {
   editToggle: $('edit-toggle'),
   rec: $('rec'),
   play: $('play'),
+  takeEdit: $('take-edit'),
   takes: $('takes'),
   save: $('save'),
   download: $('download'),
@@ -202,6 +207,8 @@ const els = {
   roots: $('roots'),
   qualities: $('qualities'),
   padNotes: $('pad-notes'),
+  takeEditor: $('take-editor'),
+  blocks: $('blocks'),
   piano: $('piano'),
 };
 
@@ -282,7 +289,7 @@ function selectPad(index) {
   updateKeyMarks();
 }
 
-// ---------- Editor ----------
+// ---------- Pad editor ----------
 
 function applyChord(root, quality) {
   const pad = pads[selectedPad];
@@ -372,6 +379,145 @@ function toggleNote(midi) {
   updateKeyMarks();
 }
 
+// ---------- Take editor (notes of a recording) ----------
+
+// A take's events are on/off pairs; a "block" is one note-on..note-off span.
+function takeBlocks(take) {
+  const blocks = [];
+  const open = new Map();
+  take.events.forEach((event) => {
+    if (event.on) {
+      const block = { notes: [...event.notes], start: event.t, end: null };
+      open.set(event.id, block);
+      blocks.push(block);
+    } else {
+      const block = open.get(event.id);
+      if (block) {
+        block.end = event.t;
+        open.delete(event.id);
+      }
+    }
+  });
+  blocks.forEach((block) => {
+    if (block.end === null) block.end = take.duration;
+  });
+  return blocks.sort((a, b) => a.start - b.start);
+}
+
+// Rebuild the take's events from blocks. Notes-on sort before notes-off at the same time.
+function setTakeBlocks(take, blocks) {
+  const events = [];
+  blocks.forEach((block, i) => {
+    const id = `b${i}`;
+    events.push({ t: block.start, on: true, id, notes: [...block.notes] });
+    events.push({ t: block.end, on: false, id });
+  });
+  events.sort((a, b) => a.t - b.t || Number(b.on) - Number(a.on));
+  take.events = events;
+  take.duration = Math.max(0, ...blocks.map((block) => block.end));
+}
+
+function currentBlocks() {
+  return currentTake ? takeBlocks(currentTake) : [];
+}
+
+function commitBlocks(blocks) {
+  setTakeBlocks(currentTake, blocks);
+  if (takes.includes(currentTake)) saveTakes();
+  stopPlayback();
+  updateControls();
+}
+
+function withSelectedBlock(change) {
+  const blocks = currentBlocks();
+  const block = blocks[selectedBlock];
+  if (!block) return;
+  change(block, blocks);
+  commitBlocks(blocks);
+}
+
+function shiftBlock(deltaMs) {
+  withSelectedBlock((block) => {
+    const length = block.end - block.start;
+    block.start = Math.max(0, block.start + deltaMs);
+    block.end = block.start + length;
+  });
+}
+
+function resizeBlock(deltaMs) {
+  withSelectedBlock((block) => {
+    block.end = Math.max(block.start + MIN_BLOCK_MS, block.end + deltaMs);
+  });
+}
+
+function deleteBlock() {
+  withSelectedBlock((_block, blocks) => {
+    blocks.splice(selectedBlock, 1);
+    selectedBlock = Math.max(0, Math.min(selectedBlock, blocks.length - 1));
+  });
+}
+
+function transposeTake(semitones) {
+  if (!currentBlocks().length) return;
+  const blocks = currentBlocks();
+  blocks.forEach((block) => {
+    block.notes = block.notes.map((n) => Math.min(127, Math.max(0, n + semitones)));
+  });
+  commitBlocks(blocks);
+}
+
+function toggleBlockNote(midi) {
+  const blocks = currentBlocks();
+  const block = blocks[selectedBlock];
+  if (!block) {
+    flashHint('先に音を選んでください');
+    return;
+  }
+  const index = block.notes.indexOf(midi);
+  if (index >= 0) block.notes.splice(index, 1);
+  else block.notes.push(midi);
+  block.notes.sort((a, b) => a - b);
+  commitBlocks(blocks);
+}
+
+function renderTakeEditor() {
+  els.takeEditor.hidden = !takeEditMode || !currentTake;
+  if (els.takeEditor.hidden) return;
+
+  const blocks = currentBlocks();
+  selectedBlock = Math.min(selectedBlock, Math.max(0, blocks.length - 1));
+
+  if (!blocks.length) {
+    const empty = document.createElement('div');
+    empty.className = 'empty';
+    empty.textContent = '音がありません';
+    els.blocks.replaceChildren(empty);
+  } else {
+    els.blocks.replaceChildren(
+      ...blocks.map((block, i) => {
+        const row = document.createElement('button');
+        row.type = 'button';
+        row.className = 'block-row' + (i === selectedBlock ? ' is-on' : '');
+        const time = (block.start / 1000).toFixed(2);
+        const length = ((block.end - block.start) / 1000).toFixed(2);
+        const names = block.notes.length ? block.notes.map(midiName).join(' ') : '（音なし）';
+        row.textContent = `${time}s  長さ ${length}s  ${names}`;
+        row.addEventListener('click', () => {
+          selectedBlock = i;
+          renderTakeEditor();
+          updateKeyMarks();
+        });
+        return row;
+      }),
+    );
+  }
+
+  const hasBlocks = blocks.length > 0;
+  els.takeEditor.querySelectorAll('[data-shift], [data-length], [data-action]').forEach((button) => {
+    button.disabled = !hasBlocks;
+  });
+}
+
 function flashHint(message) {
   els.hint.textContent = message;
   clearTimeout(hintTimer);
@@ -379,9 +525,13 @@ function flashHint(message) {
 }
 
 function updateHint() {
-  els.hint.textContent = editMode
-    ? 'ボタンを選び、コードや鍵盤で音を編集します'
-    : 'ボタンを押している間、和音が鳴ります';
+  if (takeEditMode) {
+    els.hint.textContent = '音を選び、時間・長さ・鍵盤で編集します';
+  } else if (editMode) {
+    els.hint.textContent = 'ボタンを選び、コードや鍵盤で音を編集します';
+  } else {
+    els.hint.textContent = 'ボタンを押している間、和音が鳴ります';
+  }
 }
 
 // ---------- Piano ----------
@@ -421,12 +571,19 @@ function buildPiano() {
 
 function bindKey(el, midi) {
   bindHold(el, `key${midi}`, () => [midi], () => {
-    if (editMode) toggleNote(midi);
+    if (takeEditMode) toggleBlockNote(midi);
+    else if (editMode) toggleNote(midi);
   });
 }
 
 function updateKeyMarks() {
-  const inPad = new Set(editMode ? pads[selectedPad].notes : []);
+  let marked = [];
+  if (takeEditMode && currentTake) {
+    marked = currentBlocks()[selectedBlock]?.notes ?? [];
+  } else if (editMode) {
+    marked = pads[selectedPad].notes;
+  }
+  const inPad = new Set(marked);
   els.piano.querySelectorAll('.key').forEach((key) => {
     key.classList.toggle('in-pad', inPad.has(Number(key.dataset.midi)));
   });
@@ -571,16 +728,23 @@ function updateControls() {
   els.download.disabled = !currentTake;
   els.delete.disabled = !currentTake;
 
+  els.takeEdit.textContent = takeEditMode ? '完了' : '並び編集';
+  els.takeEdit.classList.toggle('is-on', takeEditMode);
+  els.takeEdit.disabled = !takeEditMode && (!currentTake || !!recording);
+
   els.editToggle.textContent = editMode ? '完了' : '編集';
   els.editToggle.classList.toggle('is-on', editMode);
 
   renderTakes();
+  renderTakeEditor();
+  updateKeyMarks();
 }
 
-// ---------- Edit mode ----------
+// ---------- Modes ----------
 
 function toggleEditMode() {
   editMode = !editMode;
+  if (editMode) takeEditMode = false;
   renderPads();
   renderEditor();
   updateKeyMarks();
@@ -588,9 +752,22 @@ function toggleEditMode() {
   updateControls();
 }
 
+function toggleTakeEditMode() {
+  takeEditMode = !takeEditMode;
+  if (takeEditMode) {
+    editMode = false;
+    renderPads();
+    renderEditor();
+    stopPlayback();
+  }
+  updateHint();
+  updateControls();
+}
+
 // ---------- Wiring ----------
 
 els.editToggle.addEventListener('click', toggleEditMode);
+els.takeEdit.addEventListener('click', toggleTakeEditMode);
 els.rec.addEventListener('click', toggleRecord);
 els.play.addEventListener('click', togglePlay);
 els.save.addEventListener('click', saveCurrentTake);
@@ -601,6 +778,7 @@ els.takes.addEventListener('change', () => {
   stopPlayback();
   if (els.takes.value === 'unsaved' || els.takes.value === '') return;
   currentTake = takes[Number(els.takes.value)] ?? null;
+  selectedBlock = 0;
   updateControls();
 });
 
@@ -610,15 +788,25 @@ els.padName.addEventListener('input', () => {
   renderPads();
 });
 
+els.takeEditor.querySelectorAll('[data-transpose]').forEach((button) => {
+  button.addEventListener('click', () => transposeTake(Number(button.dataset.transpose)));
+});
+els.takeEditor.querySelectorAll('[data-shift]').forEach((button) => {
+  button.addEventListener('click', () => shiftBlock(Number(button.dataset.shift)));
+});
+els.takeEditor.querySelectorAll('[data-length]').forEach((button) => {
+  button.addEventListener('click', () => resizeBlock(Number(button.dataset.length)));
+});
+els.takeEditor.querySelector('[data-action="delete"]').addEventListener('click', deleteBlock);
+
 els.pads.addEventListener('contextmenu', (event) => event.preventDefault());
 els.piano.addEventListener('contextmenu', (event) => event.preventDefault());
 
 // ---------- Init ----------
 
 buildChordPicker();
-renderPads();
 buildPiano();
+renderPads();
 renderEditor();
-updateKeyMarks();
 updateHint();
 updateControls();

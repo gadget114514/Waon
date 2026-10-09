@@ -242,6 +242,70 @@ body {
   color: #fff;
 }
 
+/* Take (recording) editor */
+.take-editor {
+  width: 100%;
+  max-width: 420px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+
+.take-editor[hidden] {
+  display: none;
+}
+
+.take-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+}
+
+.take-row .label {
+  font-size: 0.8rem;
+  opacity: 0.7;
+  min-width: 2.5em;
+  text-align: right;
+}
+
+.blocks {
+  width: 100%;
+  max-height: 120px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.block-row {
+  font: inherit;
+  font-size: 0.8rem;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--tool);
+  color: var(--fg);
+  text-align: left;
+  font-variant-numeric: tabular-nums;
+}
+
+.block-row.is-on {
+  background: var(--pad-selected);
+  border-color: var(--pad-selected);
+  color: #fff;
+}
+
+.blocks .empty {
+  font-size: 0.8rem;
+  opacity: 0.6;
+  text-align: center;
+  padding: 8px;
+}
+
 /* Piano (one octave, C4-C5) */
 .piano {
   position: relative;

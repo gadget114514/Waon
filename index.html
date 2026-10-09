@@ -14,6 +14,7 @@
         <button type="button" id="edit-toggle" class="tool">編集</button>
         <button type="button" id="rec" class="tool">● 録音</button>
         <button type="button" id="play" class="tool">▶ 再生</button>
+        <button type="button" id="take-edit" class="tool">並び編集</button>
         <select id="takes" class="tool-select" aria-label="録音一覧"></select>
         <button type="button" id="save" class="tool">保存</button>
         <button type="button" id="download" class="tool">ダウンロード</button>
@@ -27,6 +28,25 @@
         <div id="roots" class="picker roots" aria-label="根音"></div>
         <div id="qualities" class="picker qualities" aria-label="コードの種類"></div>
         <div id="pad-notes" class="pad-notes"></div>
+      </section>
+
+      <section id="take-editor" class="take-editor" aria-label="録音の並び編集" hidden>
+        <div class="take-row">
+          <span class="label">全体</span>
+          <button type="button" class="tool" data-transpose="-12">−8ve</button>
+          <button type="button" class="tool" data-transpose="-1">−半音</button>
+          <button type="button" class="tool" data-transpose="1">+半音</button>
+          <button type="button" class="tool" data-transpose="12">+8ve</button>
+        </div>
+        <div id="blocks" class="blocks" aria-label="音の一覧"></div>
+        <div class="take-row">
+          <span class="label">選択</span>
+          <button type="button" class="tool" data-shift="-100">◀ 早く</button>
+          <button type="button" class="tool" data-shift="100">遅く ▶</button>
+          <button type="button" class="tool" data-length="-100">短く</button>
+          <button type="button" class="tool" data-length="100">長く</button>
+          <button type="button" class="tool" data-action="delete">削除</button>
+        </div>
       </section>
 
       <section id="piano" class="piano" aria-label="ピアノ鍵盤"></section>
