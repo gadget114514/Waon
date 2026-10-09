@@ -154,7 +154,10 @@ function clonePad(pad) {
 }
 
 function loadPads() {
-  const saved = loadJson(PADS_KEY, null);
+  return normalizePads(loadJson(PADS_KEY, null));
+}
+
+function normalizePads(saved) {
   if (!Array.isArray(saved)) return DEFAULT_PADS.map(clonePad);
   // Keep saved pads; fill any missing slots (e.g. after going from 8 to 9 pads) with defaults.
   return Array.from({ length: PAD_COUNT }, (_, i) => {
@@ -203,6 +206,9 @@ const els = {
   rec: $('rec'),
   play: $('play'),
   takeEdit: $('take-edit'),
+  projectSave: $('project-save'),
+  projectLoad: $('project-load'),
+  projectFile: $('project-file'),
   takes: $('takes'),
   save: $('save'),
   download: $('download'),
@@ -770,6 +776,56 @@ function toggleTakeEditMode() {
   updateControls();
 }
 
+// ---------- Project save / load ----------
+
+// A project is all pads plus all saved takes, written as one JSON file.
+function saveProject() {
+  const data = {
+    format: 'waon-project',
+    version: 1,
+    savedAt: new Date().toISOString(),
+    pads,
+    takes,
+  };
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = 'waon-project.json';
+  document.body.append(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  flashHint('プロジェクトを保存しました');
+}
+
+async function loadProject(file) {
+  try {
+    const data = JSON.parse(await file.text());
+    if (data?.format !== 'waon-project' || !Array.isArray(data.pads)) throw new Error('not a project');
+    if (!window.confirm('今の内容を、読み込んだプロジェクトで置き換えますか？')) return;
+
+    stopPlayback();
+    recording = null;
+    pads = normalizePads(data.pads);
+    takes = (Array.isArray(data.takes) ? data.takes : []).filter((t) => t && Array.isArray(t.events));
+    currentTake = null;
+    selectedPad = 0;
+    selectedBlock = 0;
+    editMode = false;
+    takeEditMode = false;
+    savePads();
+    saveTakes();
+    renderPads();
+    renderEditor();
+    updateHint();
+    updateControls();
+    flashHint('プロジェクトを読み込みました');
+  } catch {
+    flashHint('プロジェクトを読み込めませんでした');
+  }
+}
+
 // ---------- Wiring ----------
 
 els.editToggle.addEventListener('click', toggleEditMode);
@@ -804,6 +860,14 @@ els.takeEditor.querySelectorAll('[data-length]').forEach((button) => {
   button.addEventListener('click', () => resizeBlock(Number(button.dataset.length)));
 });
 els.takeEditor.querySelector('[data-action="delete"]').addEventListener('click', deleteBlock);
+
+els.projectSave.addEventListener('click', saveProject);
+els.projectLoad.addEventListener('click', () => els.projectFile.click());
+els.projectFile.addEventListener('change', () => {
+  const file = els.projectFile.files[0];
+  els.projectFile.value = '';
+  if (file) loadProject(file);
+});
 
 els.pads.addEventListener('contextmenu', (event) => event.preventDefault());
 els.piano.addEventListener('contextmenu', (event) => event.preventDefault());
