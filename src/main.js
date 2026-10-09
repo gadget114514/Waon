@@ -6,7 +6,6 @@ const PIANO_LOW = 60; // C4
 const PIANO_HIGH = 72; // C5
 const CHORD_BASE = 60; // root notes are placed in the octave starting at C4
 const MIN_BLOCK_MS = 50;
-const NUDGE_MS = 100;
 const PX_PER_SEC = 80; // piano roll scale; keep in sync with the grid CSS
 const ROW_H = 10; // piano roll height per semitone
 const SNAP_MS = 100;
@@ -14,6 +13,12 @@ const ROLL_MIN = 36; // C2
 const ROLL_MAX = 84; // C6
 const PADS_KEY = 'waon.pads';
 const TAKES_KEY = 'waon.takes';
+
+// A take is made of tracks. Each track holds its own on/off events.
+const TRACKS = [
+  { id: 'chord', name: '和音' },
+  { id: 'melody', name: 'メロディ' },
+];
 
 const ROOT_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
 
@@ -177,10 +182,34 @@ function normalizePads(saved) {
   });
 }
 
+// Accepts takes saved with tracks, and older takes that only had a flat event list
+// (those become the chord track).
+function normalizeTake(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  let tracks;
+  if (Array.isArray(raw.tracks)) {
+    tracks = TRACKS.map((def) => {
+      const found = raw.tracks.find((t) => t && t.id === def.id);
+      return { id: def.id, events: Array.isArray(found?.events) ? found.events : [] };
+    });
+  } else if (Array.isArray(raw.events)) {
+    tracks = TRACKS.map((def) => ({ id: def.id, events: def.id === 'chord' ? raw.events : [] }));
+  } else {
+    return null;
+  }
+  const take = {
+    name: typeof raw.name === 'string' ? raw.name : '',
+    duration: Number(raw.duration) || 0,
+    tracks,
+  };
+  take.duration = Math.max(take.duration, takeEndTime(take));
+  return take;
+}
+
 function loadTakes() {
   const saved = loadJson(TAKES_KEY, []);
   if (!Array.isArray(saved)) return [];
-  return saved.filter((t) => t && Array.isArray(t.events));
+  return saved.map(normalizeTake).filter(Boolean);
 }
 
 function savePads() {
@@ -196,21 +225,27 @@ function saveTakes() {
 let pads = loadPads();
 let takes = loadTakes(); // saved recordings
 let currentTake = null; // selected take (saved or unsaved)
-let recording = null; // { start, events } while recording
-let playback = null; // { timers, keys } while playing
+let currentTrackId = 'chord'; // track being recorded into and edited
+let recording = null; // { start, events, trackId, base } while recording
+let playback = null; // { timers, keys, frame } while playing
 let editMode = false; // editing pads
 let takeEditMode = false; // editing the notes of the current take
 let selectedPad = 0;
 let selectedBlock = 0;
 let hintTimer = null;
+let lastRange = { low: ROLL_MIN, high: ROLL_MAX }; // pitch range currently drawn
+let drag = null; // pointer interaction on the piano roll
 
 const $ = (id) => document.getElementById(id);
 const els = {
+  app: document.querySelector('.app'),
   hint: $('hint'),
   editToggle: $('edit-toggle'),
   rec: $('rec'),
   play: $('play'),
   takeEdit: $('take-edit'),
+  trackChord: $('track-chord'),
+  trackMelody: $('track-melody'),
   projectSave: $('project-save'),
   projectLoad: $('project-load'),
   projectFile: $('project-file'),
@@ -232,6 +267,76 @@ const els = {
   playhead: $('playhead'),
   piano: $('piano'),
 };
+
+// ---------- Take and track data ----------
+
+function getTrack(take, trackId) {
+  return take.tracks.find((t) => t.id === trackId);
+}
+
+function takeEndTime(take) {
+  return Math.max(0, ...take.tracks.map((track) => Math.max(0, ...track.events.map((e) => e.t))));
+}
+
+function cloneTake(take) {
+  return JSON.parse(JSON.stringify(take));
+}
+
+// A track's events are on/off pairs; a "block" is one note-on..note-off span.
+function trackBlocks(track, duration) {
+  const blocks = [];
+  const open = new Map();
+  track.events.forEach((event) => {
+    if (event.on) {
+      const block = { notes: [...event.notes], start: event.t, end: null };
+      open.set(event.id, block);
+      blocks.push(block);
+    } else {
+      const block = open.get(event.id);
+      if (block) {
+        block.end = event.t;
+        open.delete(event.id);
+      }
+    }
+  });
+  blocks.forEach((block) => {
+    if (block.end === null) block.end = duration;
+  });
+  return blocks.sort((a, b) => a.start - b.start);
+}
+
+// Rebuild one track's events from blocks. Notes-on sort before notes-off at the same time.
+function setTrackBlocks(take, trackId, blocks) {
+  const track = getTrack(take, trackId);
+  const events = [];
+  blocks.forEach((block, i) => {
+    const id = `b${i}`;
+    events.push({ t: block.start, on: true, id, notes: [...block.notes] });
+    events.push({ t: block.end, on: false, id });
+  });
+  events.sort((a, b) => a.t - b.t || Number(b.on) - Number(a.on));
+  track.events = events;
+  take.duration = Math.max(take.duration || 0, takeEndTime(take));
+}
+
+function currentBlocks() {
+  return currentTake ? trackBlocks(getTrack(currentTake, currentTrackId), currentTake.duration) : [];
+}
+
+function commitBlocks(blocks) {
+  setTrackBlocks(currentTake, currentTrackId, blocks);
+  if (takes.includes(currentTake)) saveTakes();
+  stopPlayback();
+  updateControls();
+}
+
+function withSelectedBlock(change) {
+  const blocks = currentBlocks();
+  const block = blocks[selectedBlock];
+  if (!block) return;
+  change(block, blocks);
+  commitBlocks(blocks);
+}
 
 // ---------- Note input (user) and recording ----------
 
@@ -400,62 +505,7 @@ function toggleNote(midi) {
   updateKeyMarks();
 }
 
-// ---------- Take editor (notes of a recording) ----------
-
-// A take's events are on/off pairs; a "block" is one note-on..note-off span.
-function takeBlocks(take) {
-  const blocks = [];
-  const open = new Map();
-  take.events.forEach((event) => {
-    if (event.on) {
-      const block = { notes: [...event.notes], start: event.t, end: null };
-      open.set(event.id, block);
-      blocks.push(block);
-    } else {
-      const block = open.get(event.id);
-      if (block) {
-        block.end = event.t;
-        open.delete(event.id);
-      }
-    }
-  });
-  blocks.forEach((block) => {
-    if (block.end === null) block.end = take.duration;
-  });
-  return blocks.sort((a, b) => a.start - b.start);
-}
-
-// Rebuild the take's events from blocks. Notes-on sort before notes-off at the same time.
-function setTakeBlocks(take, blocks) {
-  const events = [];
-  blocks.forEach((block, i) => {
-    const id = `b${i}`;
-    events.push({ t: block.start, on: true, id, notes: [...block.notes] });
-    events.push({ t: block.end, on: false, id });
-  });
-  events.sort((a, b) => a.t - b.t || Number(b.on) - Number(a.on));
-  take.events = events;
-  take.duration = Math.max(0, ...blocks.map((block) => block.end));
-}
-
-function currentBlocks() {
-  return currentTake ? takeBlocks(currentTake) : [];
-}
-
-function commitBlocks(blocks) {
-  setTakeBlocks(currentTake, blocks);
-  if (takes.includes(currentTake)) saveTakes();
-  stopPlayback();
-  updateControls();
-}
-
-function withSelectedBlock(change) {
-  const blocks = currentBlocks();
-  const block = blocks[selectedBlock];
-  if (!block) return;
-  change(block, blocks);
-  commitBlocks(blocks);
-}
+// ---------- Take editing (blocks of the selected track) ----------
 
 function shiftBlock(deltaMs) {
   withSelectedBlock((block) => {
@@ -478,13 +528,19 @@ function deleteBlock() {
   });
 }
 
+// Transposes every track of the take.
 function transposeTake(semitones) {
-  if (!currentBlocks().length) return;
-  const blocks = currentBlocks();
-  blocks.forEach((block) => {
-    block.notes = block.notes.map((n) => Math.min(127, Math.max(0, n + semitones)));
+  if (!currentTake) return;
+  stopPlayback();
+  currentTake.tracks.forEach((track) => {
+    const blocks = trackBlocks(track, currentTake.duration);
+    blocks.forEach((block) => {
+      block.notes = block.notes.map((n) => clampMidi(n + semitones));
+    });
+    setTrackBlocks(currentTake, track.id, blocks);
   });
-  commitBlocks(blocks);
+  if (takes.includes(currentTake)) saveTakes();
+  updateControls();
 }
 
 function toggleBlockNote(midi) {
@@ -502,9 +558,6 @@ function toggleBlockNote(midi) {
 }
 
 // ---------- Piano roll ----------
-
-let lastRange = { low: ROLL_MIN, high: ROLL_MAX }; // pitch range currently drawn
-let drag = null; // pointer interaction on the piano roll
 
 function rollRange(blocks) {
   let low = ROLL_MIN;
@@ -562,7 +615,7 @@ function renderRoll(blocks, range = rollRange(blocks)) {
   blocks.forEach((block, index) => {
     block.notes.forEach((midi) => {
       const bar = document.createElement('div');
-      bar.className = 'roll-note' + (index === selectedBlock ? ' is-on' : '');
+      bar.className = `roll-note track-${currentTrackId}` + (index === selectedBlock ? ' is-on' : '');
       bar.dataset.block = String(index);
       bar.style.left = `${(block.start * PX_PER_SEC) / 1000}px`;
       bar.style.width = `${Math.max(4, ((block.end - block.start) * PX_PER_SEC) / 1000)}px`;
@@ -703,12 +756,13 @@ function flashHint(message) {
 }
 
 function updateHint() {
+  const trackName = TRACKS.find((t) => t.id === currentTrackId).name;
   if (takeEditMode) {
-    els.hint.textContent = '音を選び、時間・長さ・鍵盤で編集します';
+    els.hint.textContent = `${trackName}トラックを編集します。音を選び、鍵盤でも変更できます`;
   } else if (editMode) {
     els.hint.textContent = 'ボタンを選び、コードや鍵盤で音を編集します';
   } else {
-    els.hint.textContent = 'ボタンを押している間、和音が鳴ります';
+    els.hint.textContent = `録音先: ${trackName}。ボタンを押している間、和音が鳴ります`;
   }
 }
 
@@ -769,33 +823,62 @@ function updateKeyMarks() {
 
 // ---------- Recording, takes and playback ----------
 
+// Recording writes into the selected track. If a take is selected, the other
+// tracks play along, and the result is a new take with the recording added.
 function toggleRecord() {
   if (recording) {
-    currentTake = { name: '', duration: performance.now() - recording.start, events: recording.events };
-    recording = null;
-  } else {
-    stopPlayback();
-    recording = { start: performance.now(), events: [] };
+    finishRecording();
+    return;
   }
+  stopPlayback();
+  const base = currentTake;
+  recording = { start: performance.now(), events: [], trackId: currentTrackId, base };
+  if (base) playTake(base, currentTrackId);
   updateControls();
 }
 
-function playTake(take) {
+function finishRecording() {
+  const { events, trackId, base, start } = recording;
+  const duration = performance.now() - start;
+  recording = null;
+  stopPlayback();
+
+  const recordedBlocks = trackBlocks({ events }, duration);
+  if (base) {
+    const merged = cloneTake(base);
+    const blocks = trackBlocks(getTrack(merged, trackId), merged.duration).concat(recordedBlocks);
+    setTrackBlocks(merged, trackId, blocks);
+    currentTake = merged;
+  } else {
+    const take = { name: '', duration, tracks: TRACKS.map((def) => ({ id: def.id, events: [] })) };
+    setTrackBlocks(take, trackId, recordedBlocks);
+    take.duration = Math.max(take.duration, duration);
+    currentTake = take;
+  }
+  selectedBlock = 0;
+  updateControls();
+}
+
+// Plays every track of the take except `excludeTrackId`.
+function playTake(take, excludeTrackId = null) {
   stopPlayback();
   const timers = [];
   const keys = new Set();
-  take.events.forEach((event) => {
-    const key = `pb:${event.id}`;
-    timers.push(
-      setTimeout(() => {
-        if (event.on) {
-          keys.add(key);
-          startVoice(key, event.notes);
-        } else {
-          stopVoice(key);
-        }
-      }, event.t),
-    );
+  take.tracks.forEach((track) => {
+    if (track.id === excludeTrackId) return;
+    track.events.forEach((event) => {
+      const key = `pb:${track.id}:${event.id}`;
+      timers.push(
+        setTimeout(() => {
+          if (event.on) {
+            keys.add(key);
+            startVoice(key, event.notes);
+          } else {
+            stopVoice(key);
+          }
+        }, event.t),
+      );
+    });
   });
   timers.push(setTimeout(stopPlayback, take.duration + 300));
 
@@ -861,10 +944,10 @@ function downloadCurrentTake() {
   if (!currentTake) return;
   const data = {
     format: 'waon-take',
-    version: 1,
+    version: 2,
     name: currentTake.name || '未保存の録音',
     duration: Math.round(currentTake.duration),
-    events: currentTake.events,
+    tracks: currentTake.tracks,
   };
   const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
@@ -909,13 +992,22 @@ function renderTakes() {
   }
 }
 
+function setTrack(trackId) {
+  currentTrackId = trackId;
+  selectedBlock = 0;
+  updateControls();
+}
+
 function updateControls() {
   els.rec.textContent = recording ? '■ 停止' : '● 録音';
   els.rec.classList.toggle('is-on', !!recording);
 
   els.play.textContent = playback ? '■ 停止' : '▶ 再生';
   els.play.classList.toggle('is-on', !!playback);
-  els.play.disabled = !playback && (!currentTake || !currentTake.events.length || !!recording);
+  els.play.disabled = !playback && (!currentTake || !currentTake.tracks.some((t) => t.events.length) || !!recording);
+
+  els.trackChord.classList.toggle('is-on', currentTrackId === 'chord');
+  els.trackMelody.classList.toggle('is-on', currentTrackId === 'melody');
 
   const unsaved = !!currentTake && !takes.includes(currentTake);
   els.save.disabled = !unsaved;
@@ -932,7 +1024,9 @@ function updateControls() {
   renderTakes();
   renderTakeEditor();
   updateKeyMarks();
-  updateEditingLayout();
+  updateHint();
+  // Smaller title and toolbar while editing, so the editors have room.
+  els.app.classList.toggle('is-editing', editMode || takeEditMode);
 }
 
 // ---------- Modes ----------
@@ -943,7 +1037,6 @@ function toggleEditMode() {
   renderPads();
   renderEditor();
   updateKeyMarks();
-  updateHint();
   updateControls();
 }
 
@@ -955,14 +1048,8 @@ function toggleTakeEditMode() {
     renderEditor();
     stopPlayback();
   }
-  updateHint();
   updateControls();
   if (takeEditMode) centerRoll();
-}
-
-// Smaller title and toolbar while editing, so the editor has room.
-function updateEditingLayout() {
-  document.querySelector('.app').classList.toggle('is-editing', editMode || takeEditMode);
 }
 
 // ---------- Project save / load ----------
@@ -971,7 +1058,7 @@ function updateEditingLayout() {
 function saveProject() {
   const data = {
     format: 'waon-project',
-    version: 1,
+    version: 2,
     savedAt: new Date().toISOString(),
     pads,
     takes,
@@ -997,8 +1084,9 @@ async function loadProject(file) {
     stopPlayback();
     recording = null;
     pads = normalizePads(data.pads);
-    takes = (Array.isArray(data.takes) ? data.takes : []).filter((t) => t && Array.isArray(t.events));
+    takes = (Array.isArray(data.takes) ? data.takes : []).map(normalizeTake).filter(Boolean);
     currentTake = null;
+    currentTrackId = 'chord';
     selectedPad = 0;
     selectedBlock = 0;
     editMode = false;
@@ -1007,7 +1095,6 @@ async function loadProject(file) {
     saveTakes();
     renderPads();
     renderEditor();
-    updateHint();
     updateControls();
     flashHint('プロジェクトを読み込みました');
   } catch {
@@ -1019,6 +1106,8 @@ async function loadProject(file) {
 
 els.editToggle.addEventListener('click', toggleEditMode);
 els.takeEdit.addEventListener('click', toggleTakeEditMode);
+els.trackChord.addEventListener('click', () => setTrack('chord'));
+els.trackMelody.addEventListener('click', () => setTrack('melody'));
 els.rec.addEventListener('click', toggleRecord);
 els.play.addEventListener('click', togglePlay);
 els.save.addEventListener('click', saveCurrentTake);
@@ -1076,5 +1165,4 @@ buildChordPicker();
 buildPiano();
 renderPads();
 renderEditor();
-updateHint();
 updateControls();

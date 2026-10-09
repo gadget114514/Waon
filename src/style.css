@@ -409,6 +409,10 @@ body {
   cursor: grab;
 }
 
+.roll-note.track-melody {
+  background: #d9a441;
+}
+
 .roll-note.is-on {
   background: var(--pad-active);
 }
