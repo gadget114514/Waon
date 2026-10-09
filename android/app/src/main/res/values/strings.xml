@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Waon</string>
+    <string name="title_activity_main">Waon</string>
+    <string name="package_name">com.gadget114514.waon</string>
+    <string name="custom_url_scheme">com.gadget114514.waon</string>
+</resources>
