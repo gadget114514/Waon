@@ -41,7 +41,14 @@
           <button type="button" class="tool" data-transpose="1">+半音</button>
           <button type="button" class="tool" data-transpose="12">+8ve</button>
         </div>
-        <div id="blocks" class="blocks" aria-label="音の一覧"></div>
+        <div id="roll" class="roll" aria-label="ピアノロール">
+          <div id="roll-keys" class="roll-keys" aria-hidden="true"></div>
+          <div id="roll-scroll" class="roll-scroll">
+            <div id="roll-grid" class="roll-grid">
+              <div id="playhead" class="playhead" hidden></div>
+            </div>
+          </div>
+        </div>
         <div class="take-row">
           <span class="label">選択</span>
           <button type="button" class="tool" data-shift="-100">◀ 早く</button>

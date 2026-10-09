@@ -7,6 +7,11 @@ const PIANO_HIGH = 72; // C5
 const CHORD_BASE = 60; // root notes are placed in the octave starting at C4
 const MIN_BLOCK_MS = 50;
 const NUDGE_MS = 100;
+const PX_PER_SEC = 80; // piano roll scale; keep in sync with the grid CSS
+const ROW_H = 10; // piano roll height per semitone
+const SNAP_MS = 100;
+const ROLL_MIN = 36; // C2
+const ROLL_MAX = 84; // C6
 const PADS_KEY = 'waon.pads';
 const TAKES_KEY = 'waon.takes';
 
@@ -220,7 +225,11 @@ const els = {
   qualities: $('qualities'),
   padNotes: $('pad-notes'),
   takeEditor: $('take-editor'),
-  blocks: $('blocks'),
+  roll: $('roll'),
+  rollKeys: $('roll-keys'),
+  rollScroll: $('roll-scroll'),
+  rollGrid: $('roll-grid'),
+  playhead: $('playhead'),
   piano: $('piano'),
 };
 
@@ -492,41 +501,198 @@ function toggleBlockNote(midi) {
   commitBlocks(blocks);
 }
 
+// ---------- Piano roll ----------
+
+let lastRange = { low: ROLL_MIN, high: ROLL_MAX }; // pitch range currently drawn
+let drag = null; // pointer interaction on the piano roll
+
+function rollRange(blocks) {
+  let low = ROLL_MIN;
+  let high = ROLL_MAX;
+  blocks.forEach((block) => {
+    block.notes.forEach((midi) => {
+      low = Math.min(low, midi);
+      high = Math.max(high, midi);
+    });
+  });
+  return { low, high };
+}
+
+function expandRange(range, padding) {
+  return { low: Math.max(0, range.low - padding), high: Math.min(127, range.high + padding) };
+}
+
+function snapMs(ms) {
+  return Math.max(0, Math.round(ms / SNAP_MS) * SNAP_MS);
+}
+
+function clampMidi(midi) {
+  return Math.min(127, Math.max(0, midi));
+}
+
+function pitchAtY(y) {
+  return clampMidi(lastRange.high - Math.floor(y / ROW_H));
+}
+
+function renderRoll(blocks, range = rollRange(blocks)) {
+  lastRange = range;
+  const rows = range.high - range.low + 1;
+  const duration = currentTake ? currentTake.duration : 0;
+  els.rollGrid.style.width = `${Math.ceil(((duration + 4000) * PX_PER_SEC) / 1000)}px`;
+  els.rollGrid.style.height = `${rows * ROW_H}px`;
+
+  const keyEls = [];
+  const rowEls = [];
+  for (let i = 0; i < rows; i++) {
+    const midi = range.high - i;
+    const kind = isBlack(midi) ? 'black' : 'white';
+    const key = document.createElement('div');
+    key.className = `roll-key ${kind}`;
+    if (midi % 12 === 0) key.textContent = midiName(midi);
+    keyEls.push(key);
+
+    const row = document.createElement('div');
+    row.className = `roll-row ${kind}`;
+    row.style.top = `${i * ROW_H}px`;
+    rowEls.push(row);
+  }
+  els.rollKeys.replaceChildren(...keyEls);
+
+  const noteEls = [];
+  blocks.forEach((block, index) => {
+    block.notes.forEach((midi) => {
+      const bar = document.createElement('div');
+      bar.className = 'roll-note' + (index === selectedBlock ? ' is-on' : '');
+      bar.dataset.block = String(index);
+      bar.style.left = `${(block.start * PX_PER_SEC) / 1000}px`;
+      bar.style.width = `${Math.max(4, ((block.end - block.start) * PX_PER_SEC) / 1000)}px`;
+      bar.style.top = `${(range.high - midi) * ROW_H}px`;
+      noteEls.push(bar);
+    });
+  });
+  els.rollGrid.replaceChildren(...rowEls, ...noteEls, els.playhead);
+}
+
+function centerRoll() {
+  els.rollScroll.scrollTop = Math.max(0, (lastRange.high - 66) * ROW_H - els.rollScroll.clientHeight / 2);
+}
+
+function onRollDown(event) {
+  if (!currentTake) return;
+  const bar = event.target.closest('.roll-note');
+  if (bar) {
+    event.preventDefault();
+    const blocks = currentBlocks();
+    const index = Number(bar.dataset.block);
+    const block = blocks[index];
+    selectedBlock = index;
+    const nearRight = bar.getBoundingClientRect().right - event.clientX < 12;
+    drag = {
+      mode: nearRight ? 'resize' : 'move',
+      blocks,
+      block,
+      range: expandRange(rollRange(blocks), 12),
+      startX: event.clientX,
+      startY: event.clientY,
+      origStart: block.start,
+      origEnd: block.end,
+      origNotes: [...block.notes],
+      moved: false,
+    };
+    els.rollGrid.setPointerCapture(event.pointerId);
+    renderRoll(blocks, drag.range);
+  } else {
+    // Empty area: a tap adds a note, a drag scrolls the roll (handled by the browser).
+    const rect = els.rollGrid.getBoundingClientRect();
+    drag = {
+      mode: 'tap',
+      x: event.clientX - rect.left,
+      y: event.clientY - rect.top,
+      startX: event.clientX,
+      startY: event.clientY,
+      moved: false,
+    };
+  }
+}
+
+function onRollMove(event) {
+  if (!drag) return;
+  const dx = event.clientX - drag.startX;
+  const dy = event.clientY - drag.startY;
+  if (Math.hypot(dx, dy) > 6) drag.moved = true;
+
+  if (drag.mode === 'tap') {
+    if (drag.moved) drag = null; // scrolling, not tapping
+    return;
+  }
+  if (!drag.moved) return;
+
+  const deltaMs = (dx * 1000) / PX_PER_SEC;
+  const block = drag.block;
+  if (drag.mode === 'move') {
+    const length = drag.origEnd - drag.origStart;
+    block.start = snapMs(drag.origStart + deltaMs);
+    block.end = block.start + length;
+    const semitones = -Math.round(dy / ROW_H);
+    block.notes = drag.origNotes.map((midi) => clampMidi(midi + semitones));
+  } else {
+    block.end = Math.max(block.start + SNAP_MS, snapMs(drag.origEnd + deltaMs));
+  }
+  renderRoll(drag.blocks, drag.range);
+}
+
+function onRollUp() {
+  if (!drag) return;
+  const finished = drag;
+  drag = null;
+
+  if (finished.mode === 'tap') {
+    if (finished.moved) return;
+    const start = snapMs((finished.x * 1000) / PX_PER_SEC);
+    const block = { notes: [pitchAtY(finished.y)], start, end: start + SNAP_MS };
+    const blocks = currentBlocks();
+    blocks.push(block);
+    blocks.sort((a, b) => a.start - b.start);
+    selectedBlock = blocks.indexOf(block);
+    commitBlocks(blocks);
+    return;
+  }
+
+  if (finished.moved) {
+    finished.blocks.sort((a, b) => a.start - b.start);
+    selectedBlock = finished.blocks.indexOf(finished.block);
+    commitBlocks(finished.blocks);
+  } else {
+    renderTakeEditor();
+    updateKeyMarks();
+  }
+}
+
+function onRollCancel() {
+  if (drag && drag.mode === 'tap') {
+    drag = null;
+    return;
+  }
+  onRollUp();
+}
+
+function followPlayhead(x) {
+  const view = els.rollScroll;
+  if (x < view.scrollLeft || x > view.scrollLeft + view.clientWidth - 40) {
+    view.scrollLeft = Math.max(0, x - 40);
+  }
+}
+
 function renderTakeEditor() {
   els.takeEditor.hidden = !takeEditMode || !currentTake;
   if (els.takeEditor.hidden) return;
 
   const blocks = currentBlocks();
   selectedBlock = Math.min(selectedBlock, Math.max(0, blocks.length - 1));
+  renderRoll(blocks);
 
-  if (!blocks.length) {
-    const empty = document.createElement('div');
-    empty.className = 'empty';
-    empty.textContent = '音がありません';
-    els.blocks.replaceChildren(empty);
-  } else {
-    els.blocks.replaceChildren(
-      ...blocks.map((block, i) => {
-        const row = document.createElement('button');
-        row.type = 'button';
-        row.className = 'block-row' + (i === selectedBlock ? ' is-on' : '');
-        const time = (block.start / 1000).toFixed(2);
-        const length = ((block.end - block.start) / 1000).toFixed(2);
-        const names = block.notes.length ? block.notes.map(midiName).join(' ') : '（音なし）';
-        row.textContent = `${time}s  長さ ${length}s  ${names}`;
-        row.addEventListener('click', () => {
-          selectedBlock = i;
-          renderTakeEditor();
-          updateKeyMarks();
-        });
-        return row;
-      }),
-    );
-  }
-
-  const hasBlocks = blocks.length > 0;
   els.takeEditor.querySelectorAll('[data-shift], [data-length], [data-action]').forEach((button) => {
-    button.disabled = !hasBlocks;
+    button.disabled = !blocks.length;
   });
 }
 
@@ -632,7 +798,21 @@ function playTake(take) {
     );
   });
   timers.push(setTimeout(stopPlayback, take.duration + 300));
-  playback = { timers, keys };
+
+  // Move the playhead along the piano roll while the take plays.
+  const state = { timers, keys, frame: 0 };
+  playback = state;
+  const startedAt = performance.now();
+  const tick = () => {
+    if (playback !== state) return;
+    const x = ((performance.now() - startedAt) * PX_PER_SEC) / 1000;
+    els.playhead.style.transform = `translateX(${x}px)`;
+    followPlayhead(x);
+    state.frame = requestAnimationFrame(tick);
+  };
+  els.playhead.style.transform = 'translateX(0px)';
+  els.playhead.hidden = false;
+  tick();
   updateControls();
 }
 
@@ -640,7 +820,9 @@ function stopPlayback() {
   if (!playback) return;
   playback.timers.forEach(clearTimeout);
   playback.keys.forEach(stopVoice);
+  cancelAnimationFrame(playback.frame);
   playback = null;
+  els.playhead.hidden = true;
   updateControls();
 }
 
@@ -750,6 +932,7 @@ function updateControls() {
   renderTakes();
   renderTakeEditor();
   updateKeyMarks();
+  updateEditingLayout();
 }
 
 // ---------- Modes ----------
@@ -774,6 +957,12 @@ function toggleTakeEditMode() {
   }
   updateHint();
   updateControls();
+  if (takeEditMode) centerRoll();
+}
+
+// Smaller title and toolbar while editing, so the editor has room.
+function updateEditingLayout() {
+  document.querySelector('.app').classList.toggle('is-editing', editMode || takeEditMode);
 }
 
 // ---------- Project save / load ----------
@@ -860,6 +1049,15 @@ els.takeEditor.querySelectorAll('[data-length]').forEach((button) => {
   button.addEventListener('click', () => resizeBlock(Number(button.dataset.length)));
 });
 els.takeEditor.querySelector('[data-action="delete"]').addEventListener('click', deleteBlock);
+
+els.rollGrid.addEventListener('pointerdown', onRollDown);
+els.rollGrid.addEventListener('pointermove', onRollMove);
+els.rollGrid.addEventListener('pointerup', onRollUp);
+els.rollGrid.addEventListener('pointercancel', onRollCancel);
+els.rollGrid.addEventListener('contextmenu', (event) => event.preventDefault());
+els.rollScroll.addEventListener('scroll', () => {
+  els.rollKeys.scrollTop = els.rollScroll.scrollTop;
+});
 
 els.projectSave.addEventListener('click', saveProject);
 els.projectLoad.addEventListener('click', () => els.projectFile.click());

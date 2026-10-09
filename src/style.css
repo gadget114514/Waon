@@ -66,6 +66,31 @@ body {
   letter-spacing: 0.08em;
 }
 
+/* Editing: shrink the title, hint and toolbar to make room for the editors. */
+.app.is-editing {
+  gap: 6px;
+  padding-top: calc(env(safe-area-inset-top) + 6px);
+}
+
+.app.is-editing .title {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+.app.is-editing .hint {
+  display: none;
+}
+
+.app.is-editing .toolbar {
+  gap: 4px;
+}
+
+.app.is-editing .tool,
+.app.is-editing .tool-select {
+  font-size: 0.7rem;
+  padding: 3px 6px;
+}
+
 .hint {
   margin: 0;
   min-height: 1.2em;
@@ -306,6 +331,101 @@ body {
   opacity: 0.6;
   text-align: center;
   padding: 8px;
+}
+
+/* Piano roll (take editor) */
+.roll {
+  display: flex;
+  width: 100%;
+  height: 200px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--pad);
+}
+
+.roll-keys {
+  flex: none;
+  width: 34px;
+  overflow: hidden;
+  border-right: 1px solid var(--border);
+}
+
+.roll-key {
+  box-sizing: border-box;
+  height: 10px;
+  font-size: 7px;
+  line-height: 9px;
+  padding-left: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  border-bottom: 1px solid var(--border);
+}
+
+.roll-key.white {
+  background: var(--key-white);
+  color: #666;
+}
+
+.roll-key.black {
+  background: var(--key-black);
+  color: #ccc;
+}
+
+.roll-scroll {
+  flex: 1;
+  overflow: auto;
+  position: relative;
+}
+
+/* One second is 80px wide; keep in sync with PX_PER_SEC in main.js. */
+.roll-grid {
+  position: relative;
+  background-image: repeating-linear-gradient(to right, var(--border) 0 1px, transparent 1px 80px);
+}
+
+.roll-row {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 10px;
+  box-sizing: border-box;
+  border-bottom: 1px solid var(--border);
+  pointer-events: none;
+}
+
+.roll-row.black {
+  background: rgba(0, 0, 0, 0.12);
+}
+
+.roll-note {
+  position: absolute;
+  height: 9px;
+  box-sizing: border-box;
+  border: 1px solid rgba(0, 0, 0, 0.25);
+  border-radius: 3px;
+  background: var(--key-in-pad);
+  touch-action: none;
+  cursor: grab;
+}
+
+.roll-note.is-on {
+  background: var(--pad-active);
+}
+
+.playhead {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 2px;
+  background: var(--pad-selected);
+  pointer-events: none;
+  z-index: 2;
+}
+
+.playhead[hidden] {
+  display: none;
 }
 
 /* Piano (one octave, C4-C5) */
