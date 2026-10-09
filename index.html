@@ -8,8 +8,26 @@
   <body>
     <main class="app">
       <h1 class="title">Waon</h1>
-      <p class="hint">ボタンを押している間、和音が鳴ります</p>
+      <p class="hint" id="hint"></p>
+
+      <div class="toolbar">
+        <button type="button" id="edit-toggle" class="tool">編集</button>
+        <button type="button" id="rec" class="tool">● 録音</button>
+        <button type="button" id="play" class="tool">▶ 再生</button>
+        <select id="takes" class="tool-select" aria-label="録音一覧"></select>
+        <button type="button" id="save" class="tool">保存</button>
+        <button type="button" id="download" class="tool">ダウンロード</button>
+        <button type="button" id="delete" class="tool">削除</button>
+      </div>
+
       <section id="pads" class="pads" aria-label="和音パッド"></section>
+
+      <section id="editor" class="editor" aria-label="ボタンの編集" hidden>
+        <input id="pad-name" class="pad-name" type="text" maxlength="10" aria-label="ボタン名" />
+        <div id="pad-notes" class="pad-notes"></div>
+      </section>
+
+      <section id="piano" class="piano" aria-label="ピアノ鍵盤"></section>
     </main>
     <script type="module" src="/src/main.js"></script>
   </body>
