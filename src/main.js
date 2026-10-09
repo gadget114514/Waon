@@ -1,6 +1,6 @@
 import './style.css';
 
-const PAD_COUNT = 8;
+const PAD_COUNT = 9;
 const MAX_NOTES = 4;
 const PIANO_LOW = 60; // C4
 const PIANO_HIGH = 72; // C5
@@ -38,6 +38,7 @@ const DEFAULT_PADS = [
   { name: 'Am', root: 9, quality: 'm' },
   { name: 'G7', root: 7, quality: '7' },
   { name: 'Cmaj7', root: 0, quality: 'maj7' },
+  { name: 'Dm7', root: 2, quality: 'm7' },
 ].map((p) => ({ ...p, notes: chordNotes(p.root, p.quality) }));
 
 function chordNotes(root, quality) {
@@ -154,13 +155,18 @@ function clonePad(pad) {
 
 function loadPads() {
   const saved = loadJson(PADS_KEY, null);
-  if (!Array.isArray(saved) || saved.length !== PAD_COUNT) return DEFAULT_PADS.map(clonePad);
-  return saved.map((p, i) => ({
-    name: typeof p?.name === 'string' ? p.name.slice(0, 10) : DEFAULT_PADS[i].name,
-    root: sanitizeRoot(p?.root),
-    quality: sanitizeQuality(p?.quality),
-    notes: sanitizeNotes(p?.notes),
-  }));
+  if (!Array.isArray(saved)) return DEFAULT_PADS.map(clonePad);
+  // Keep saved pads; fill any missing slots (e.g. after going from 8 to 9 pads) with defaults.
+  return Array.from({ length: PAD_COUNT }, (_, i) => {
+    const p = saved[i];
+    if (!p) return clonePad(DEFAULT_PADS[i]);
+    return {
+      name: typeof p.name === 'string' ? p.name.slice(0, 10) : DEFAULT_PADS[i].name,
+      root: sanitizeRoot(p.root),
+      quality: sanitizeQuality(p.quality),
+      notes: sanitizeNotes(p.notes),
+    };
+  });
 }
 
 function loadTakes() {
